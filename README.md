@@ -92,6 +92,21 @@ flutter build windows --release
 ```
 El programa queda en `app/build/windows/x64/runner/Release/` (comparta esa carpeta completa; el `.exe` necesita los archivos que lo acompañan).
 
+### Generar la versión web
+
+La misma app funciona en el navegador. Para probarla en el PC:
+```bash
+cd app
+flutter create --platforms=web .   # solo la primera vez: completa la carpeta web/
+flutter run -d chrome
+```
+Para compilarla: `flutter build web --release` (queda en `app/build/web/`).
+
+**Publicación automática:** el flujo `.github/workflows/publicar-web.yml` compila la versión web y la publica en
+**GitHub Pages** cada vez que se hace push a `main`. Hay que activarlo una sola vez en el repositorio:
+**Settings → Pages → Build and deployment → Source: GitHub Actions**. La página queda en
+`https://<usuario>.github.io/<repositorio>/`. En la web los reportes (PDF, Excel y CSV) se descargan con el navegador.
+
 ### Generar la versión de iOS
 
 Apple solo permite compilar apps de iPhone en un **Mac con Xcode**:

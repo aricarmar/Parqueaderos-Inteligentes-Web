@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Evento recibido por WebSocket: spots | movement | assignments | notification
 class RtEvent {
@@ -11,9 +12,10 @@ class RtEvent {
 }
 
 /// Conexión WebSocket con reconexión automática (sincronización en tiempo real).
+/// Usa `web_socket_channel`, que funciona igual en Windows, Android, iOS y web.
 class Realtime {
   final _controller = StreamController<RtEvent>.broadcast();
-  WebSocket? _socket;
+  WebSocketChannel? _socket;
   Timer? _retry;
   String? _url;
   bool _closed = true;
@@ -35,15 +37,15 @@ class Realtime {
     final url = _url;
     if (_closed || url == null) return;
     try {
-      final socket = await WebSocket.connect(url).timeout(const Duration(seconds: 10));
+      final socket = WebSocketChannel.connect(Uri.parse(url));
+      await socket.ready.timeout(const Duration(seconds: 10));
       if (_closed) {
-        await socket.close();
+        await socket.sink.close();
         return;
       }
       _socket = socket;
       _attempt = 0;
-      socket.pingInterval = const Duration(seconds: 25);
-      socket.listen(
+      socket.stream.listen(
         (msg) {
           try {
             final m = jsonDecode(msg as String);
@@ -77,7 +79,7 @@ class Realtime {
   void disconnect() {
     _closed = true;
     _retry?.cancel();
-    _socket?.close();
+    _socket?.sink.close();
     _socket = null;
   }
 }

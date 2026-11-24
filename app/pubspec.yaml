@@ -1,5 +1,5 @@
 name: parqueadero_app
-description: "Nueva Castilla Etapa 3 Parking - Parqueadero comunitario del Conjunto Residencial Nueva Castilla Etapa 3. App para Android, iOS y Windows."
+description: "Nueva Castilla Etapa 3 Parking - Parqueadero comunitario del Conjunto Residencial Nueva Castilla Etapa 3. App para Android, iOS, Windows y web."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -14,6 +14,8 @@ dependencies:
   path_provider: ^2.1.4
   open_filex: ^4.7.0
   share_plus: ^13.0.0
+  web_socket_channel: ^3.0.1
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_test:

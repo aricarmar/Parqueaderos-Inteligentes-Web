@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -73,7 +73,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         context, () => session.api.getBytes('/reports/$_type', query: {..._query, 'format': format}));
     if (bytes == null || !mounted) return;
     final name = 'reporte-$_type-${isoDate(DateTime.now())}.$format';
-    File file;
+    SavedFile file;
     try {
       file = await AppFiles.save(name, bytes);
     } catch (e) {
@@ -85,8 +85,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
       }
       return;
     }
-    // Se abre de inmediato con el visor del dispositivo (PDF, Excel...)
-    final opened = await AppFiles.open(file);
+    // Se abre de inmediato con el visor del dispositivo (PDF, Excel...).
+    // En la versión web el navegador ya lo descargó; se puede abrir con el botón «Abrir».
+    final opened = kIsWeb ? true : await AppFiles.open(file);
     if (!mounted) return;
     await showDialog<void>(
       context: context,
@@ -96,7 +97,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(opened
+            Text(kIsWeb
+                ? '${_formats[format]!.$2} generado y descargado por el navegador.'
+                : opened
                 ? '${_formats[format]!.$2} generado y abierto.'
                 : '${_formats[format]!.$2} generado. No se encontró una aplicación para abrirlo: '
                     'puede compartirlo o instalar un visor de ${format == 'pdf' ? 'PDF' : 'hojas de cálculo'}.'),
@@ -109,7 +112,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
           TextButton.icon(
             onPressed: () async {
               final ok = await AppFiles.open(file);
-              if (!ok && ctx.mounted) showSnack(ctx, 'No hay una aplicación para abrir este archivo.');
+              if (!ok && ctx.mounted) {
+                showSnack(ctx, kIsWeb
+                    ? 'El navegador bloqueó la ventana nueva; abra el archivo desde sus descargas.'
+                    : 'No hay una aplicación para abrir este archivo.');
+              }
             },
             icon: const Icon(Icons.open_in_new),
             label: const Text('Abrir'),

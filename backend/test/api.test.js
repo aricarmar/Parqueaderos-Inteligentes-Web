@@ -184,6 +184,76 @@ test('mapa de celdas y resumen', async () => {
   assert.equal(bulk.data.created, 3);
 });
 
+test('eliminar celdas: solo las que nunca se han usado', async () => {
+  const z = await api('POST', '/spots/bulk', { prefix: 'Z', from: 1, to: 3 });
+  assert.equal(z.data.created, 3);
+  const all = await api('GET', '/spots');
+  const z01 = all.data.find((s) => s.code === 'Z01');
+  // El guarda no puede eliminar celdas
+  assert.equal((await api('DELETE', `/spots/${z01.id}`, null, 'guarda')).status, 403);
+  const del = await api('DELETE', `/spots/${z01.id}`);
+  assert.equal(del.status, 200);
+  assert.equal((await api('DELETE', `/spots/${z01.id}`)).status, 404);
+  // Una celda con asignaciones (historial) no se elimina: se debe desactivar
+  const used = all.data.find((s) => s.assignment_id);
+  assert.ok(used, 'hay una celda asignada');
+  const blocked = await api('DELETE', `/spots/${used.id}`);
+  assert.equal(blocked.status, 409);
+  // Por rango: elimina Z02 y Z03 y no toca las celdas con historial
+  const range = await api('POST', '/spots/bulk-delete', { prefix: 'Z', from: 1, to: 3 });
+  assert.equal(range.data.deleted, 2);
+  assert.equal(range.data.kept, 0);
+  const [, pre, num] = used.code.match(/^(\D*)(\d+)$/);
+  const keep = await api('POST', '/spots/bulk-delete', { prefix: pre, from: Number(num), to: Number(num) });
+  assert.equal(keep.data.deleted, 0);
+  assert.equal(keep.data.kept, 1, 'la celda usada se conserva');
+  const after = await api('GET', '/spots');
+  assert.ok(after.data.some((s) => s.id === used.id));
+  assert.ok(!after.data.some((s) => s.code.startsWith('Z')));
+});
+
+test('eliminar residentes, vehículos, usuarios y ciclos creados por error', async () => {
+  // Residente nuevo con cuenta y vehículo: se puede eliminar porque nunca se ha usado
+  const c = await api('POST', '/residents', {
+    full_name: 'Registro Equivocado',
+    document_number: '888000222',
+    house_number: '298',
+    vehicle: { plate: 'ERR111', type: 'carro' },
+    account: { username: 'equivocado', password: 'secreta1' },
+  });
+  assert.equal(c.status, 201, JSON.stringify(c.data));
+  const v2 = await api('POST', `/residents/${c.data.id}/vehicles`, { plate: 'ERR222', type: 'moto' });
+  assert.equal((await api('DELETE', `/vehicles/${v2.data.id}/permanent`, null, 'guarda')).status, 403);
+  assert.equal((await api('DELETE', `/vehicles/${v2.data.id}/permanent`)).status, 200);
+  assert.equal((await api('DELETE', `/residents/${c.data.id}/permanent`)).status, 200);
+  assert.equal((await api('GET', `/residents/${c.data.id}`)).status, 404);
+  const [acc] = await sql`SELECT id FROM cuenta_usuario WHERE usuario = 'equivocado'`;
+  assert.equal(acc, undefined, 'la cuenta del residente también se elimina');
+
+  // Un residente o vehículo con asignaciones no se elimina: se debe inactivar o retirar
+  const [used] = await sql`SELECT residente_id, vehiculo_id FROM asignacion LIMIT 1`;
+  assert.equal((await api('DELETE', `/residents/${used.resident_id}/permanent`)).status, 409);
+  assert.equal((await api('DELETE', `/vehicles/${used.vehicle_id}/permanent`)).status, 409);
+
+  // Usuarios: se elimina una cuenta que nunca ingresó; no la propia ni una que ya ingresó
+  const u = await api('POST', '/users', { username: 'guarda.error', password: 'secreta1', role: 'guarda', full_name: 'Guarda Error' });
+  assert.equal(u.status, 201, JSON.stringify(u.data));
+  assert.equal((await api('DELETE', `/users/${u.data.id}`)).status, 200);
+  const users = await api('GET', '/users');
+  const me = users.data.find((x) => x.username === 'admin');
+  const guard = users.data.find((x) => x.username === 'guarda');
+  assert.equal((await api('DELETE', `/users/${me.id}`)).status, 400);
+  assert.equal((await api('DELETE', `/users/${guard.id}`)).status, 409);
+
+  // Ciclos: solo los planeados sin asignaciones
+  const cy = await api('POST', '/cycles', { name: 'Ciclo por error', start_date: '2031-01-01', end_date: '2031-03-01' });
+  assert.equal(cy.status, 201, JSON.stringify(cy.data));
+  assert.equal((await api('DELETE', `/cycles/${cy.data.id}`)).status, 200);
+  const cycles = await api('GET', '/cycles');
+  const active = cycles.data.find((x) => x.status === 'activo');
+  assert.equal((await api('DELETE', `/cycles/${active.id}`)).status, 409);
+});
+
 test('entrada autorizada, doble entrada, salida e ingreso no autorizado', async () => {
   const cyc = await api('GET', '/cycles');
   const active = cyc.data.find((c) => c.status === 'activo');
@@ -240,6 +310,23 @@ test('sorteo del próximo ciclo: preview, reglas de elegibilidad y confirmación
   // El orden de prioridad es no creciente en IPA
   const ipas = pv.data.proposal.map((p) => p.ipa);
   assert.deepEqual(ipas, [...ipas].sort((a, b) => b - a));
+
+  // La asignación manual aplica la misma regla: quien usó el ciclo anterior no repite,
+  // salvo una excepción con motivo, que queda registrada.
+  const repeated = [...activeResidents][0];
+  const freeSpot = pv.data.proposal[0].parking_spot_id;
+  const blocked = await api('POST', '/assignments', { cycle_id: next.id, resident_id: repeated, parking_spot_id: freeSpot });
+  assert.equal(blocked.status, 409, JSON.stringify(blocked.data));
+  assert.equal(blocked.data.details.code, 'ciclo_anterior');
+  const noReason = await api('POST', '/assignments', { cycle_id: next.id, resident_id: repeated, parking_spot_id: freeSpot, force: true });
+  assert.equal(noReason.status, 400);
+  const forced = await api('POST', '/assignments', {
+    cycle_id: next.id, resident_id: repeated, parking_spot_id: freeSpot, force: true, reason: 'Caso de prueba',
+  });
+  assert.equal(forced.status, 201, JSON.stringify(forced.data));
+  assert.ok(String(forced.data.notes).includes('Caso de prueba'));
+  const canceled = await api('POST', `/assignments/${forced.data.id}/cancel`, { reason: 'prueba' });
+  assert.equal(canceled.status, 200, JSON.stringify(canceled.data));
 
   // Confirmar la propuesta tal como la vio el administrador
   const proposal = pv.data.proposal.map((p) => ({ resident_id: p.resident_id, parking_spot_id: p.parking_spot_id }));
@@ -381,6 +468,58 @@ test('notificaciones por correo: residentes y administración (Brevo)', async ()
   assert.ok(toAdmins, 'alerta a la administración');
   const [{ n }] = await sql`SELECT count(*)::int AS n FROM notificacion WHERE correo_enviado_en IS NOT NULL`;
   assert.ok(n > 0, 'quedó registrada la fecha de envío');
+});
+
+test('auditoría automática: alertas, informe semanal y exportación', async () => {
+  const { isNightHour, checkNightAdminLogin } = await import('../src/services/alerts.js');
+  const { runScheduledAuditReport } = await import('../src/services/auditReport.js');
+  const alert = async (tipo) =>
+    (await sql`SELECT count(*)::int AS n FROM auditoria WHERE accion = 'alerta_seguridad' AND detalles->>'tipo' = ${tipo}`)[0].n;
+
+  // 1) Ingresos rechazados repetidos de la misma placa: alerta al llegar a 3
+  for (let i = 0; i < 3; i++) {
+    const m = await api('POST', '/movements', { plate: 'XYZ999', type: 'entrada' }, 'guarda');
+    assert.equal(m.data.authorized, false);
+  }
+  assert.equal(await alert('ingresos_rechazados'), 1);
+  const [n1] = await sql`SELECT count(*)::int AS n FROM notificacion WHERE titulo LIKE 'Alerta de seguridad: ingresos rechazados de la placa XYZ999%'`;
+  assert.ok(n1.n >= 1, 'la administración recibió la alerta');
+
+  // 2) Eliminaciones seguidas del mismo usuario (las pruebas anteriores ya hicieron más de 5)
+  assert.equal(await alert('eliminaciones_seguidas'), 1);
+
+  // 3) Ingreso de un administrador en horario nocturno (hora de Colombia)
+  assert.equal(isNightHour(new Date('2026-01-01T04:00:00Z')), true); // 11:00 p. m.
+  assert.equal(isNightHour(new Date('2026-01-01T15:00:00Z')), false); // 10:00 a. m.
+  const [adm] = await sql`SELECT * FROM cuenta_usuario WHERE usuario = 'admin'`;
+  const nightBefore = await alert('ingreso_nocturno'); // puede haber otras si las pruebas corren de noche
+  assert.equal(await checkNightAdminLogin(adm, new Date('2026-01-01T04:00:00Z')), true);
+  assert.equal(await checkNightAdminLogin(adm, new Date('2026-01-01T15:00:00Z')), false);
+  assert.equal(await alert('ingreso_nocturno'), nightBefore + 1);
+
+  // Resumen e informe de auditoría
+  const sum = await api('GET', '/audit/summary?days=7');
+  assert.ok(sum.data.total > 0);
+  assert.ok(sum.data.items.find((i) => i.key === 'eliminaciones').value > 0);
+  assert.equal((await api('GET', '/audit/summary', null, 'guarda')).status, 403);
+  const rep = await api('POST', '/audit/report', { days: 7 });
+  assert.equal(rep.status, 200);
+  const [n2] = await sql`SELECT count(*)::int AS n FROM notificacion WHERE categoria = 'informe_auditoria'`;
+  assert.ok(n2.n >= 1);
+
+  // Informe semanal automático: una sola vez por semana
+  assert.equal(await runScheduledAuditReport(), true);
+  assert.equal(await runScheduledAuditReport(), false);
+  assert.equal(await runScheduledAuditReport(new Date(Date.now() + 9 * 86_400_000)), true);
+
+  // Exportación de la auditoría a PDF, Excel y CSV
+  for (const [fmt, magic] of [['pdf', '%PDF'], ['xlsx', 'PK'], ['csv', 'Fecha y hora']]) {
+    const res = await fetch(`${base}/audit?format=${fmt}`, { headers: { Authorization: `Bearer ${tokens.admin}` } });
+    assert.equal(res.status, 200, fmt);
+    const buf = Buffer.from(await res.arrayBuffer());
+    assert.ok(buf.subarray(0, 40).toString('utf8').replace(/^\uFEFF/, '').startsWith(magic), fmt);
+  }
+  assert.equal((await api('GET', '/audit?format=doc')).status, 400);
 });
 
 after(() => brevo.close());

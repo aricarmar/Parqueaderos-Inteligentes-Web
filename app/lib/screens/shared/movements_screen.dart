@@ -19,16 +19,36 @@ class MovementsScreen extends StatefulWidget {
 class _MovementsScreenState extends State<MovementsScreen> {
   String _plate = '';
   late String _filter = widget.initialFilter ?? 'todos';
-  DateTime _day = DateTime.now();
-  bool _allDays = false;
+  // Rango de fechas como en Reportes (Desde / Hasta). Se abre con el día de hoy.
+  DateTime? _from = DateTime.now();
+  DateTime? _to = DateTime.now();
+
+  Future<void> _pick(bool from) async {
+    final d = await showDatePicker(
+      context: context,
+      initialDate: (from ? _from : _to) ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (d == null) return;
+    setState(() {
+      if (from) {
+        _from = d;
+        if (_to != null && _to!.isBefore(d)) _to = d;
+      } else {
+        _to = d;
+        if (_from != null && _from!.isAfter(d)) _from = d;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final query = <String, dynamic>{
       'plate': _plate,
       'limit': 500,
-      if (!_allDays) 'from': isoDate(_day),
-      if (!_allDays) 'to': isoDate(_day),
+      if (_from != null) 'from': isoDate(_from!),
+      if (_to != null) 'to': isoDate(_to!),
       if (_filter == 'rechazados') 'authorized': 'false',
       if (_filter == 'autorizados') 'authorized': 'true',
     };
@@ -42,44 +62,39 @@ class _MovementsScreenState extends State<MovementsScreen> {
             runSpacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              SizedBox(
-                width: 200,
-                child: TextField(
-                  decoration: inputDeco('Placa', icon: Icons.search),
-                  onSubmitted: (v) => setState(() => _plate = normalizePlate(v)),
-                  onChanged: (v) {
-                    if (v.isEmpty) setState(() => _plate = '');
-                  },
-                ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.event),
+                label: Text(_from == null ? 'Desde' : 'Desde ${fmtDate(isoDate(_from!))}'),
+                onPressed: () => _pick(true),
               ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.event),
-                label: Text(_allDays ? 'Todas las fechas' : fmtDate(isoDate(_day))),
-                onPressed: () async {
-                  final d = await showDatePicker(
-                    context: context,
-                    initialDate: _day,
-                    firstDate: DateTime(2020),
-                    lastDate: DateTime.now().add(const Duration(days: 1)),
-                  );
-                  if (d != null) {
-                    setState(() {
-                      _day = d;
-                      _allDays = false;
-                    });
-                  }
-                },
-              ),
-              FilterChip(
-                label: const Text('Todas las fechas'),
-                selected: _allDays,
-                onSelected: (v) => setState(() => _allDays = v),
+                label: Text(_to == null ? 'Hasta' : 'Hasta ${fmtDate(isoDate(_to!))}'),
+                onPressed: () => _pick(false),
               ),
               for (final f in const ['todos', 'autorizados', 'rechazados'])
                 ChoiceChip(
                   label: Text(f[0].toUpperCase() + f.substring(1)),
                   selected: _filter == f,
                   onSelected: (_) => setState(() => _filter = f),
+                ),
+              SizedBox(
+                width: 340,
+                child: TextField(
+                  decoration: inputDeco('Buscar placa', icon: Icons.search),
+                  onSubmitted: (v) => setState(() => _plate = normalizePlate(v)),
+                  onChanged: (v) {
+                    if (v.isEmpty) setState(() => _plate = '');
+                  },
+                ),
+              ),
+              if (_from != null || _to != null)
+                TextButton(
+                  onPressed: () => setState(() {
+                    _from = null;
+                    _to = null;
+                  }),
+                  child: const Text('Todas las fechas'),
                 ),
             ],
           ),
@@ -98,7 +113,9 @@ class _MovementsScreenState extends State<MovementsScreen> {
                       padding: const EdgeInsets.only(bottom: 24),
                       itemCount: list.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, i) => Container(color: Theme.of(context).cardColor, child: movementTile(list[i])),
+                      itemBuilder: (_, i) => Builder(
+                        builder: (context) => Container(color: Theme.of(context).cardColor, child: movementTile(list[i])),
+                      ),
                     ),
                   ),
           ),

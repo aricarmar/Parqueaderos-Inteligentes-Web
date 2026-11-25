@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/api.dart';
 import '../../core/format.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
@@ -62,6 +63,14 @@ class _SpotsMapScreenState extends State<SpotsMapScreen> {
                           if (await _addSpotsDialog(context)) reload();
                         },
                         icon: const Icon(Icons.add_box_outlined),
+                      ),
+                    if (user.isAdmin)
+                      IconButton(
+                        tooltip: 'Eliminar celdas',
+                        onPressed: () async {
+                          if (await _deleteSpotsDialog(context)) reload();
+                        },
+                        icon: const Icon(Icons.delete_outline),
                       ),
                   ],
                 ),
@@ -224,6 +233,30 @@ class _SpotsMapScreenState extends State<SpotsMapScreen> {
                         reload();
                       },
                     ),
+                    // Solo se ofrece en celdas sin asignación y desocupadas; la API además
+                    // rechaza las que tienen historial (esas se deben desactivar).
+                    if (s['assignment_id'] == null && !asBool(s['is_occupied']))
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(foregroundColor: AppColors.red),
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Eliminar celda'),
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          if (await confirm(
+                              context,
+                              'Eliminar celda',
+                              '¿Eliminar la celda ${asStr(s['code'])}? Esta acción no se puede deshacer.\n\n'
+                                  'Solo se eliminan celdas que nunca se han usado. Si la celda tiene historial '
+                                  '(asignaciones o entradas), desactívela en su lugar.',
+                              danger: true,
+                              ok: 'Eliminar')) {
+                            if (!context.mounted) return;
+                            await runAction(context, () => session.api.delete('/spots/${asInt(s['id'])}'),
+                                success: 'Celda ${asStr(s['code'])} eliminada');
+                            reload();
+                          }
+                        },
+                      ),
                   ],
                 ),
               ],
@@ -245,16 +278,131 @@ class _SpotsMapScreenState extends State<SpotsMapScreen> {
     final active = open.firstWhere((c) => asStr(c['status']) == 'activo', orElse: () => open.first);
     final resident = await pickResident(context, title: 'Asignar celda ${asStr(spot['code'])} (${asStr(active['name'])})');
     if (resident == null || !context.mounted) return;
-    await runAction(
-      context,
-      () => session.api.post('/assignments', {
-        'cycle_id': asInt(active['id']),
-        'resident_id': asInt(resident['id']),
-        'parking_spot_id': asInt(spot['id']),
-        'notes': 'Asignación manual desde el mapa',
-      }),
-      success: 'Celda ${asStr(spot['code'])} asignada a ${asStr(resident['full_name'])}',
+    final body = {
+      'cycle_id': asInt(active['id']),
+      'resident_id': asInt(resident['id']),
+      'parking_spot_id': asInt(spot['id']),
+      'notes': 'Asignación manual desde el mapa',
+    };
+    final ok = 'Celda ${asStr(spot['code'])} asignada a ${asStr(resident['full_name'])}';
+    try {
+      await session.api.post('/assignments', body);
+      if (context.mounted) showSnack(context, ok);
+    } on ApiException catch (e) {
+      if (!context.mounted) return;
+      final details = e.details;
+      if (e.status == 409 && details is Map && details['code'] == 'ciclo_anterior') {
+        // Usó el parqueadero en el ciclo anterior: solo se asigna como excepción, con motivo
+        final reason = await _exceptionReason(context, e.message);
+        if (reason == null || !context.mounted) return;
+        await runAction(context, () => session.api.post('/assignments', {...body, 'force': true, 'reason': reason}),
+            success: '$ok (excepción registrada en la auditoría)');
+      } else {
+        showSnack(context, e.message, error: true);
+      }
+    }
+  }
+
+  /// Pide el motivo de una excepción a la regla del ciclo anterior. Devuelve null si se cancela.
+  Future<String?> _exceptionReason(BuildContext context, String message) async {
+    final reason = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          icon: const Icon(Icons.warning_amber_rounded, color: AppColors.amber, size: 40),
+          title: const Text('Usó el parqueadero en el ciclo anterior'),
+          content: SizedBox(
+            width: 380,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(message),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: reason,
+                  autofocus: true,
+                  maxLines: 2,
+                  decoration: inputDeco('Motivo de la excepción', hint: 'Ej.: condición médica, orden de la administración'),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('No asignar')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppColors.amber),
+              onPressed: reason.text.trim().isEmpty ? null : () => Navigator.pop(ctx, reason.text.trim()),
+              child: const Text('Asignar como excepción'),
+            ),
+          ],
+        ),
+      ),
     );
+  }
+
+  Future<bool> _deleteSpotsDialog(BuildContext context) async {
+    final prefix = TextEditingController(text: 'D');
+    final from = TextEditingController(text: '1');
+    final to = TextEditingController(text: '10');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar celdas'),
+        content: SizedBox(
+          width: 340,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Se eliminan las celdas del rango que nunca se han usado. Las que tengan '
+                  'asignaciones o entradas registradas se conservan (puede desactivarlas desde el mapa).'),
+              const SizedBox(height: 12),
+              TextField(controller: prefix, decoration: inputDeco('Prefijo (letra)')),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                      child: TextField(
+                          controller: from, keyboardType: TextInputType.number, decoration: inputDeco('Desde'))),
+                  const SizedBox(width: 10),
+                  Expanded(
+                      child: TextField(
+                          controller: to, keyboardType: TextInputType.number, decoration: inputDeco('Hasta'))),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return false;
+    final res = await runAction(
+      context,
+      () => session.api.post('/spots/bulk-delete', {
+        'prefix': prefix.text,
+        'from': int.tryParse(from.text) ?? 0,
+        'to': int.tryParse(to.text) ?? 0,
+      }),
+    );
+    if (res != null && context.mounted) {
+      final m = asMap(res);
+      final kept = asInt(m['kept']);
+      showSnack(
+          context,
+          'Celdas eliminadas: ${asInt(m['deleted'])}'
+          '${kept > 0 ? ' · $kept se conservaron porque tienen historial' : ''}');
+    }
+    return res != null;
   }
 
   Future<bool> _addSpotsDialog(BuildContext context) async {

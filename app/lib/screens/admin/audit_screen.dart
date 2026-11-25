@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../core/files.dart';
 import '../../core/format.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
@@ -48,6 +49,24 @@ const _actionLabels = {
   'restablecer_contrasena': 'Contraseña restablecida',
   'cambio_contrasena': 'Cambio de contraseña',
   'respaldo_manual': 'Respaldo manual',
+  'sorteo_automatico': 'Sorteo automático',
+  'editar_ciclo': 'Ciclo editado',
+  'eliminar_ciclo': 'Ciclo eliminado',
+  'crear_celda': 'Celda creada',
+  'crear_celdas': 'Celdas creadas',
+  'editar_celda': 'Celda editada',
+  'eliminar_celda': 'Celda eliminada',
+  'eliminar_celdas': 'Celdas eliminadas',
+  'eliminar_residente': 'Residente eliminado',
+  'inactivar_vehiculo': 'Vehículo retirado',
+  'eliminar_vehiculo': 'Vehículo eliminado',
+  'crear_usuario': 'Usuario creado',
+  'editar_usuario': 'Usuario editado',
+  'eliminar_usuario': 'Usuario eliminado',
+  'solicitud_recuperacion': 'Solicitud de recuperación de contraseña',
+  'alerta_seguridad': 'Alerta de seguridad',
+  'informe_auditoria': 'Informe de auditoría',
+  'exportar_auditoria': 'Auditoría exportada',
 };
 
 class _AuditTab extends StatefulWidget {
@@ -66,14 +85,53 @@ class _AuditTabState extends State<_AuditTab> {
       children: [
         Padding(
           padding: const EdgeInsets.all(12),
-          child: SizedBox(
-            width: 320,
-            child: LabeledDropdown<String>(
-              label: 'Tipo de acción',
-              value: _action,
-              items: {'': 'Todas', ..._actionLabels},
-              onChanged: (v) => setState(() => _action = v),
-            ),
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: 320,
+                child: LabeledDropdown<String>(
+                  label: 'Tipo de acción',
+                  value: _action,
+                  items: {'': 'Todas', ..._actionLabels},
+                  onChanged: (v) => setState(() => _action = v),
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Exportar la auditoría',
+                onSelected: (f) => _export(context, f),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'pdf', child: Text('PDF')),
+                  PopupMenuItem(value: 'xlsx', child: Text('Excel (.xlsx)')),
+                  PopupMenuItem(value: 'csv', child: Text('CSV')),
+                ],
+                child: const IgnorePointer(
+                  child: OutlinedButton(
+                    onPressed: _noop,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.download_outlined),
+                      SizedBox(width: 6),
+                      Text('Exportar'),
+                    ]),
+                  ),
+                ),
+              ),
+              FilledButton.icon(
+                icon: const Icon(Icons.forward_to_inbox_outlined),
+                label: const Text('Enviar informe ahora'),
+                onPressed: () async {
+                  if (await confirm(context, 'Informe de auditoría',
+                      'Se enviará a la administración el resumen de los últimos 7 días, en la aplicación y por correo. '
+                          'Además, el sistema lo envía automáticamente cada lunes.')) {
+                    if (!context.mounted) return;
+                    await runAction(context, () => session.api.post('/audit/report', {'days': 7}),
+                        success: 'Informe de auditoría enviado');
+                  }
+                },
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -87,7 +145,8 @@ class _AuditTabState extends State<_AuditTab> {
                     child: ListView.separated(
                       itemCount: list.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, i) {
+                      // Builder: cada fila toma los colores del tema actual al cambiar entre modo claro y oscuro
+                      itemBuilder: (_, i) => Builder(builder: (context) {
                         final a = list[i];
                         final details = a['details'];
                         return Container(
@@ -119,13 +178,29 @@ class _AuditTabState extends State<_AuditTab> {
                                     ),
                           ),
                         );
-                      },
+                      }),
                     ),
                   ),
           ),
         ),
       ],
     );
+  }
+
+  static void _noop() {}
+
+  Future<void> _export(BuildContext context, String format) async {
+    final bytes = await runAction(
+        context, () => session.api.getBytes('/audit', query: {'format': format, if (_action.isNotEmpty) 'action': _action}));
+    if (bytes == null || !context.mounted) return;
+    final name = 'auditoria-${isoDate(DateTime.now())}.$format';
+    try {
+      final file = await AppFiles.save(name, bytes);
+      await AppFiles.open(file);
+      if (context.mounted) showSnack(context, 'Auditoría exportada: ${file.path}');
+    } catch (_) {
+      if (context.mounted) showSnack(context, 'No se pudo guardar el archivo en este dispositivo.', error: true);
+    }
   }
 
   String _short(dynamic d) {
